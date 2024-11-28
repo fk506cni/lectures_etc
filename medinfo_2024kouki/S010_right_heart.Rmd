@@ -1,0 +1,515 @@
+---
+title: "S010_right_heart"
+author: "fk506cni"
+date: "2021/8/11"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+require(tidyverse)
+require(data.table)
+require(DT)
+## ROC
+library(pROC)
+
+# require(table1)
+require(tableone)
+require(openxlsx)
+
+require(ggpubr)
+
+
+
+require(Matching)
+
+# require(MBESS)
+```
+
+
+## RHC data
+from
+https://hbiostat.org/data/
+
+info
+https://hbiostat.org/data/repo/rhc.html
+
+original  
+https://pubmed.ncbi.nlm.nih.gov/8782638/
+
+
+http://rstudio-pubs-static.s3.amazonaws.com/8257_c577ba847be34e89b85a326f20b6d6b9.html  
+ただしコードがめっちゃ古い  
+nonrandomパッケージは開発終了しており、現在は利用不能  
+
+
+```{r}
+datdir <- "./dat"
+if(!dir.exists(datdir)){
+  dir.create(datdir)
+}
+
+
+fileurls <- "https://hbiostat.org/data/repo/rhc.csv"
+
+destfile <- str_c(datdir, "/rhc.csv", sep="")
+
+
+if(!file.exists(destfile)){
+  download.file(url = fileurls,
+              destfile = destfile)
+}
+```
+
+
+```{r}
+# require(foreign)
+# rhc <- data.table::fread(destfile) %>%
+rhc <- readr::read_csv(destfile) %>%  
+  mutate(numco = cardiohx + chfhx + dementhx + 
+           psychhx + chrpulhx + renalhx + 
+           liverhx + gibledhx + malighx +
+           immunhx + transhx + amihx) 
+# %>% 
+#   mutate(date_of_event)
+
+rhc %>%
+  colnames()
+
+# colnames(rhc)
+```
+
+```{r}
+
+
+listvar <- c("age", 
+             "sex",
+             "edu",
+             "race",
+             "income",
+             "ninsclas",
+             "wtkilo1",
+             "cat1",
+             "numco",
+             "dnr1",
+             "surv2md1",
+             "das2d3pc",
+             "aps1",
+             "scoma1",
+             "meanbp1","wblc1","hrt1","resp1","temp1","pafi1","alb1","hema1","bili1","crea1","sod1","pot1","paco21","ph1",
+             "ca"
+             )
+
+listfac <- c("sex",
+             "race",
+             "income",
+             "ninsclas",
+             "cat1"
+             )
+v_strat <- "swang1"
+cramVars <- c("sex")
+nonnormal <- c("age", "wblc1")
+exact <- c("sex",
+             "race",
+             "income",
+             "ninsclas",
+             "cat1",
+           "ca")
+argsExact <-  list(workspace = 2 * 10^5)
+
+table1 <- CreateTableOne(vars = listvar,
+                         strata = v_strat,
+                         factorVars = listfac,
+                         data = rhc,
+                         argsExact =  argsExact)
+table1
+
+# rhc$wtkilo1
+
+```
+
+
+
+```{r}
+t1 <- table1 %>%
+  print(quote=T,cramVars = cramVars, nonnormal=nonnormal, noSpace=T, quate=T, addOverall = T, exact=exact,minMax = TRUE,factorVars = listfac,showAllLevels=T)
+# t1
+rn <- t1 %>%
+  rownames() %>%
+  str_remove_all("\"")
+
+tab3Mat <- t1 %>%
+  # print(table1,cramVars = cramVars, 
+  #                nonnormal = nonnormal,quote = FALSE, noSpaces = TRUE, printToggle = FALSE, exact = exact,minMax = TRUE, )  %>%
+  as.data.frame() %>%
+  # .[,1:4] %>%
+  mutate(rowname = rn) %>%
+  dplyr::select(rowname, everything()) %>%
+  as.data.table()
+
+
+tab3Mat %>%
+  DT::datatable()
+
+write.xlsx(x = tab3Mat,
+          "./dat/table1.xlsx",
+          overwrite = T)
+```
+
+```{r}
+## Right heart cath dataset
+# rhc <- read.csv(destfile, stringsAsFactors = FALSE)
+# rhc <- read.csv(destfile, stringsAsFactors = F)
+
+## first 6 rows
+# summary(rhc)
+```
+
+
+```{r}
+t_test <- rhc[,c("swang1", "death")]  %>%
+  table() %>%
+  addmargins()
+t_test
+# t_test %>%
+#   class()
+
+## Show outcome (death) and exposure (swang1)
+# rhc[,c("swang1", "death")] %>%
+#   table() %>%
+#   addmargins()
+
+# rhc$one <- 1
+```
+
+おなじことをTidyverseで
+```{r}
+rhc_test <- rhc %>%
+  group_by(death, swang1) %>%
+  summarise(n=n()) %>%
+  tidyr::spread(key=death, value=n)  %>%
+  mutate(death_rate = Yes /(Yes + No))
+rhc_test
+
+rhc_smr <- rhc %>%
+  group_by(death, swang1) %>%
+  summarise(n=n()) %>%
+  tidyr::spread(key=death, value=n) %>%
+  mutate(death_rate = Yes /(Yes + No))
+rhc_smr %>%
+  DT::datatable()
+```
+
+
+
+```{r}
+GetConfInt <- function(obj) {
+
+    logitsticModel <- FALSE
+
+    if (identical(class(obj), c("glm", "lm")) == TRUE) {
+
+        mat <- coef(summary(obj))
+        logitsticModel <- TRUE
+
+    } else if (identical(class(obj), c("geeglm", "gee", "glm")) == TRUE) {
+
+        mat <- coef(summary(obj))
+
+    } else if (identical(class(obj), c("coeftest")) == TRUE) {
+
+        mat <- obj
+
+    } else if (identical(class(obj), c("matrix")) == TRUE) {
+
+        mat <- obj
+
+    } else {
+
+        stop("Not a supported object")
+    }
+
+    ## Add point estimates
+    matRes <- mat[, 1, drop = F]
+
+    ## 1.96 * SE
+    matSe <-  mat[, 2, drop = F] * qnorm(0.975)
+
+    ## Estimate, lower 95% limit, upper 95% limit
+    matRes <- cbind(matRes, (matRes - matSe), (matRes + matSe))
+
+    ## Name
+    colnames(matRes) <- c("OR","lower","upper")
+
+    ## Exponentiate
+    matRes <- exp(matRes)
+
+    ## Add p-value
+    matRes <- cbind(matRes, mat[, 3:4, drop = F])
+
+    if (logitsticModel == TRUE) {
+
+        matRes[, c("lower","upper")] <- exp(suppressMessages(confint(obj)))
+    }
+
+    ## Show
+    return(matRes)
+}
+```
+
+```{r}
+## Crude analysis (confounded!)
+# glmCrude <- glm(formula = death ~ swang1,
+#                 family  = binomial(link = "logit"),
+#                 data    = rhc)
+
+# rhc$death %>%
+#   unique()
+
+rhc <- rhc %>%
+  mutate(death_b = case_when(
+    death == "Yes" ~ 1,
+    death == "No" ~ 0,
+    T ~ NA_real_
+  ))  %>%
+  mutate(swang1_b = case_when(
+    swang1 == "RHC" ~1,
+    swang1 == "No RHC" ~ 0,
+    T ~ NA_real_
+  )) %>%
+  dplyr::select(death_b, swang1_b, everything())
+
+# View(rhc)
+# rhc$death_b
+glmCrude <- glm(formula = death_b ~ swang1_b,
+                family  = binomial(link = "logit"),
+                data    = rhc)
+
+glmCrude %>%
+  summary()
+# rhc$death
+GetConfInt(glmCrude)
+
+# exp(0.22477)
+```
+
+```{r}
+3e+2
+2e-1
+5e-2
+```
+
+
+多変量全部のせ
+```{r}
+glmFull <- glm(formula =  death_b ~ swang1 + age + sex + race + edu + income + ninsclas + cat1 + das2d3pc + dnr1 + ca + surv2md1 + aps1 + scoma1 + wtkilo1 + temp1 + meanbp1 + resp1 + hrt1 + pafi1 + paco21 + ph1 + wblc1 + hema1 + sod1 + pot1 + crea1 + bili1 + alb1 + resp + card + neuro + gastr + renal + meta + hema + seps + trauma + ortho + cardiohx + chfhx + dementhx + psychhx + chrpulhx + renalhx + liverhx + gibledhx + malighx + immunhx + transhx + amihx,
+               family  = binomial(link = "logit"),
+               data    = rhc)
+
+summary(glmFull)
+## Show result
+GetConfInt(glmFull)
+```
+
+PSモデル
+```{r}
+psModel <- glm(formula = swang1_b ~ age + sex + race + edu + income + ninsclas + cat1 + das2d3pc + dnr1 + ca + surv2md1 + aps1 + scoma1 + wtkilo1 + temp1 + meanbp1 + resp1 + hrt1 + pafi1 + paco21 + ph1 + wblc1 + hema1 + sod1 + pot1 + crea1 + bili1 + alb1 + resp + card + neuro + gastr + renal + meta + hema + seps + trauma + ortho + cardiohx + chfhx + dementhx + psychhx + chrpulhx + renalhx + liverhx + gibledhx + malighx + immunhx + transhx + amihx,
+               family  = binomial(link = "logit"),
+               data    = rhc)
+psModel %>%
+  GetConfInt()
+
+psModel %>%
+  summary()
+## PS (predicted probability of treatment)
+
+# rhc <- rhc %>%
+#   mutate(ps = predict(psModel, type = "response"))
+predict(psModel, type = "response")
+rhc$ps <- predict(psModel, type = "response")
+
+rhc <- rhc %>%
+  mutate(ps = predict(psModel, type = "response"))
+
+rhc <- rhc %>%
+  dplyr::select(ps, everything())
+
+rhc$ps %>%
+  MASS::truehist()
+
+
+## PS model diagnostic by ROC
+rocPsModel <- roc(swang1_b ~ ps, data = rhc)
+rocPsModel
+plot(rocPsModel, legacy.axes = TRUE)
+```
+
+```{r}
+
+p_logiti <- ggplot()+theme_pubr()+
+  geom_histogram(data = rhc,
+                 aes(x=ps, fill = swang1), position = "identity", color="black", alpha = 0.5)
+p_logiti
+
+
+
+# p_logit <- ggplot()+theme_pubr()+
+#   geom_histogram(data = rhc,
+#                  aes(x=ps, fill = swang1), position = "stack", color="black")
+# p_logit
+
+p_logitr <-ggplot()+theme_pubr()+
+  geom_histogram(data = rhc,
+                 aes(x=ps, fill = swang1), position = "fill", color="black")
+# rhc$ps
+
+p_logitr
+```
+
+
+
+```{r}
+## Perform PS-adjusted logistic regression (linear PS)
+glmPsAdjLinear <- glm(formula = death_b ~ swang1_b + ps,
+                      family  = binomial(link = "logit"),
+                      data    = rhc)
+glmPsAdjLinear %>%
+  summary()
+
+GetConfInt(glmPsAdjLinear)
+```
+
+```{r}
+glmPsAdjQuad <- glm(formula = death_b ~ swang1 + ps + I(ps^2),
+                    family  = binomial(link = "logit"),
+                    data    = rhc)
+glmPsAdjQuad %>%
+  summary()
+GetConfInt(glmPsAdjQuad)
+```
+
+中身を見たい人向け。  
+鬱陶しいのでコメントアウト
+```{r}
+# rhc$swang1 == "RHC"
+# rhc$ps
+# rhc$ps / (1 - rhc$ps)
+# log(rhc$ps / (1 - rhc$ps))
+
+```
+
+https://cran.r-project.org/web/packages/Matching/index.html
+```{r}
+set.seed(1234)
+listMatch <- Match(Tr = (rhc$swang1 == "RHC"),      # Need to be in 0,1
+                       X        = log(rhc$ps / (1 - rhc$ps)), # logit of PS,i.e., log(PS/(1-PS)) as matching variable
+                       M        = 1,                          # 1:1 match
+                       caliper  = 0.2,                          # caliper = x * SD(each matching variable)
+                       replace  = FALSE,
+                       ties     = TRUE,
+                       version  = "fast")
+```
+
+なかみ確認
+
+鬱陶しいのでコメントアウト
+```{r}
+# listMatch
+# listMatch[c("index.treated","index.control")]
+# unlist(listMatch[c("index.treated","index.control")])
+```
+
+症例選択
+```{r}
+
+psMatchData <- rhc[unlist(listMatch[c("index.treated","index.control")]), ]
+
+
+p_ps <- ggplot()+theme_pubr()+
+  geom_histogram(data= psMatchData,
+                 aes(x=ps, fill = swang1),color = "black",
+                 position = "dodge")
+p_ps
+```
+
+```{r}
+table1m <- CreateTableOne(vars = listvar,
+                         strata = v_strat,
+                         factorVars = listfac,
+                         data = psMatchData,
+                         argsExact =  argsExact)
+table1m
+
+## If SMDs are needed as numericals, use ExtractSmd()
+ExtractSmd(table1m)
+```
+
+
+
+```{r}
+glmMatched <- glm(formula = death_b ~ swang1_b,
+                      family  = binomial(link = "logit"),
+                      data    = psMatchData)
+glmMatched %>%
+  summary()
+GetConfInt(glmMatched)
+```
+
+
+
+
+https://yukiyanai.github.io/jp/classes/econometrics2/contents/R/matching.html
+```{r}
+require(MatchIt)
+
+set.seed(114514)
+
+m_mn <- matchit(swang1_b ~ age + sex + race + edu + income + ninsclas + cat1 + das2d3pc + dnr1 + ca + surv2md1 + aps1 + scoma1 + wtkilo1 + temp1 + meanbp1 + resp1 + hrt1 + pafi1 + paco21 + ph1 + wblc1 + hema1 + sod1 + pot1 + crea1 + bili1 + alb1 + resp + card + neuro + gastr + renal + meta + hema + seps + trauma + ortho + cardiohx + chfhx + dementhx + psychhx + chrpulhx + renalhx + liverhx + gibledhx + malighx + immunhx + transhx + amihx, 
+                   data = rhc, method = "nearest", distance = "glm")
+summary(m_mn)
+
+
+```
+
+プロットあれこれ
+```{r}
+# plot(m_mn, interactive = FALSE)
+# plot(m_mn, type = "QQ", interactive = FALSE)
+```
+
+```{r}
+data_m <- match.data(m_mn)
+
+
+glmMatchedIt <- glm(formula = death_b ~ swang1_b,
+                family  = binomial(link = "logit"),
+                data    = data_m)
+
+glmMatchedIt %>%
+  summary()
+
+
+data_m %>%
+  group_by(death, swang1) %>%
+  summarise(n=n()) %>%
+  tidyr::spread(key=death, value=n) %>%
+  mutate(death_rate = Yes /(Yes + No)) %>%
+  DT::datatable()
+```
+
+
+```{r}
+glmFullMatchedIt <- glm(formula =  death_b ~ swang1_b + age + sex + race + edu + income + ninsclas + cat1 + das2d3pc + dnr1 + ca + surv2md1 + aps1 + scoma1 + wtkilo1 + temp1 + meanbp1 + resp1 + hrt1 + pafi1 + paco21 + ph1 + wblc1 + hema1 + sod1 + pot1 + crea1 + bili1 + alb1 + resp + card + neuro + gastr + renal + meta + hema + seps + trauma + ortho + cardiohx + chfhx + dementhx + psychhx + chrpulhx + renalhx + liverhx + gibledhx + malighx + immunhx + transhx + amihx,
+               family  = binomial(link = "logit"),
+               data    = data_m)
+
+glmFullMatchedIt %>%
+  summary()
+```
+
+```{r}
+sessionInfo()
+rstudioapi::versionInfo()
+```
+
